@@ -53,6 +53,35 @@ static constexpr char sys_power_state[] = "/sys/power/state";
 static constexpr char sys_power_wakeup_count[] = "/sys/power/wakeup_count";
 static bool autosuspend_is_init = false;
 
+static std::string samsung_touchscreen_readname(const std::string& path) {
+    std::string fullPath = path + "/name";
+    std::string name;
+    if(!android::base::ReadFileToString(fullPath, &name))
+        name = "unknown";
+    return name;
+}
+
+static std::string samsung_touchscreen_enabled() {
+    int fd = -1;
+    for(int i=0; i<30; i++) {
+	std::string is = std::to_string(i);
+        std::string name;
+        std::string path = "/sys/class/input/input" + is + "/name";
+        if(!android::base::ReadFileToString(path, &name))
+            name = "unknown";
+        if(name == "sec_touchscreen" ||
+                name =="sec_touchscreen\n") {
+            return "/sys/class/input/input" + is + "/enabled";
+        }
+    }
+    return "";
+}
+
+static bool samsung_touchscreen_set(bool enable) {
+	const std::string path = samsung_touchscreen_enabled();
+	return android::base::WriteStringToFile(path, enable ? "1" : "0");
+}
+
 static void update_sleep_time(bool success) {
     if (success) {
         sleep_time = BASE_SLEEP_TIME;
@@ -64,6 +93,7 @@ static void update_sleep_time(bool success) {
 
 static void* suspend_thread_func(void* arg __attribute__((unused))) {
     bool success = true;
+    bool samsungTs = true;
 
     while (true) {
         update_sleep_time(success);
@@ -94,6 +124,15 @@ static void* suspend_thread_func(void* arg __attribute__((unused))) {
         if (WriteStringToFd(wakeup_count, wakeup_count_fd)) {
             LOG(VERBOSE) << "write " << sleep_state << " to " << sys_power_state;
             success = WriteStringToFd(sleep_state, state_fd);
+
+            if(success) {
+                if(samsungTs) {
+                    LOG(VERBOSE) << "Resetting Samsung TS";
+                    samsung_touchscreen_set(0);
+                    for(int i=0; i<10 && !samsung_touchscreen_set(1); i++)
+                        LOG(VERBOSE) << "Resetting Samsung TS: try " << i;
+                }
+            }
 
             void (*func)(bool success) = wakeup_func;
             if (func != NULL) {
